@@ -32,12 +32,21 @@
 
 (extend-protocol IRead
   clojure.lang.Symbol
-  (read [symbol]
+  (read [sym]
     (cond
-      (= symbol '<pop>) (PopToken.)
-      (variable-declaration? symbol) (VariableDeclarationToken. symbol)
-      (variable? symbol) (VariableToken. symbol)
-      :else (throw (ex-info "Tried to parse invalid symbol" {:symbol symbol})))))
+      (= sym '<pop>)
+      (PopToken.)
+
+      (variable-declaration? sym)
+      (VariableDeclarationToken. (->> sym ;; drop trailing '+'
+                                      name
+                                      butlast
+                                      (apply str)
+                                      symbol))
+
+      (variable? sym)
+      (VariableToken. sym)
+      :else (throw (ex-info "Tried to parse invalid symbol" {:symbol sym})))))
 
 (defn invocation? [list]
   (and
@@ -71,29 +80,109 @@
 (defprotocol IEval
   (eval [token state]))
 
-(def empty-state {:bindings {}
-                  :stack []})
+(defn safe-pop [stack]
+  (cond-> stack
+    (not-empty stack)
+    pop))
 
 (extend-protocol IEval
   VariableToken
   (eval [{symbol :symbol} {:keys [bindings stack] :as state}]
     (if-let [value (get bindings symbol)]
       (update state :stack conj value)
-      (throw (ex-info "Use of undeclared Var" {:var symbol})))))
+      (throw (ex-info (str "Use of undeclared Var " symbol) {:var symbol}))))
+
+  VariableDeclarationToken
+  (eval [{symbol :symbol} {:keys [stack] :as state}]
+    (update state :bindings assoc symbol (last stack)))
+
+  PopToken
+  (eval [_ {:keys [stack] :as state}]
+    (update state :stack safe-pop))
+
+  ConstantToken
+  (eval [{constant :constant} state]
+    (update state :stack conj constant))
+
+  InvokeToken
+  (eval [{:keys [op airity]} {:keys [stack] :as state}]
+    (-> state
+        (update :stack #(->> % (drop-last airity) vec))
+        (update :stack conj (apply op (take-last airity stack))))))
+
+(defmacro spy [expr]
+  `(do (println ~expr "\uD83D\uDC40 ")
+       ~expr))
+
+(defn read-eval [clause state]
+  (->> clause
+       (map read)
+       (reduce
+         (fn [prev-state token]
+           (eval token prev-state))
+         state)))
+
+(extend-protocol IEval
+  IfElseToken
+  (eval [{:keys [true-clause false-clause]} {:keys [stack] :as state'}]
+    (let [state (update state' :stack safe-pop)]
+      (if (-> stack last boolean)
+        (read-eval true-clause state)
+        (read-eval false-clause state)))))
+
+
+(def empty-state {:bindings {}
+                  :stack []})
 
 (comment
 
-  (eval (VariableToken. 69) {:bindings {69 10} :stack []})
 
+  (read-eval ['!a
+              '!b
+              (list 'invoke> + 2)
+              '!v1+
+              '!c
+              '!c
+              '<pop>
+              2
+              (list 'invoke> * 2)
+              '!v2+
+              (list 'invoke> = 2)
+              (list 'if>
+                    '!v1
+                    '!v2
+                    (list 'invoke> - 2)
+                    'else>
+                    "false!!!"
+                    (list 'invoke> println 1)
+                    '<pop>
+                    '!v1
+                    '!v2
+                    (list 'invoke> * 2))]
+             (update empty-state :bindings assoc '!a 1 '!b 2 '!c 4))
 
+  (eval (InvokeToken. 2) {:bindings {69 10} :stack [1 2]})
 
   (map ["read"])
+
+  (read-eval ['!a
+              '!b
+              '(invoke> + 2)
+              ;'!0+
+              ;'!c
+              ;'<pop>
+              ;2
+              ;'(invoke> * 2)
+              ;'!v2+
+              ;'(invoke> = 2)
+              ]
+             (update empty-state :bindings assoc '!a 1 '!b 2 '!c 4))
 
   (map read
        ['!a
         '!b
         '(invoke> + 2)
-        '!v+
+        '!0+
         '!c
         '<pop>
         2
