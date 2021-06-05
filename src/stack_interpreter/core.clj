@@ -66,9 +66,8 @@
     (nat-int? (last list))))
 
 (defn parse-if-else-list [list]
-  (let [[[head & true-clause] _ false-clause] (->> list
-                                                   (partition-by (partial = (quote else>))))]
-    (when (and (= head (quote if>))
+  (let [[[head & true-clause] _ false-clause] (partition-by (partial = 'else>) list)]
+    (when (and (= head 'if>)
                (seq true-clause)
                (seq false-clause))
       [true-clause false-clause])))
@@ -106,7 +105,7 @@
 
 (extend-protocol IEval
   VariableToken
-  (eval [{symbol :symbol} {:keys [bindings stack] :as state}]
+  (eval [{symbol :symbol} {:keys [bindings] :as state}]
     (if-let [value (get bindings symbol)]
       (update state :stack conj value)
       (throw (ex-info (str "Use of undeclared Var " symbol) {:var symbol}))))
@@ -136,7 +135,7 @@
         (read-eval true-clause state)
         (read-eval false-clause state)))))
 
-;; INTERFACE
+;; USER INTERFACE
 
 (defmacro defstackfn [name vars & clauses]
   `(defn ~name [& args#]
@@ -174,5 +173,17 @@
       (invoke> * 2)))
 
   (x 1 2 4) ;; => prints false!!!, returns 24
+
+  (defstackfn y
+    [!v1 !v2]
+    !v1
+    !v2
+    (invoke> > 2)
+    (if>
+      "first arg greater!"
+      else>
+      "second arg greater!"))
+
+  (y 2 1) ;; => "first arg greater!"
 
   )
