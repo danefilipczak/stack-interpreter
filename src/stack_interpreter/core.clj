@@ -1,8 +1,18 @@
 (ns stack-interpreter.core
   (:require [clojure.string :as s]))
 
+;; HELPERS
+(defmacro spy [expr]
+  `(do (println ~expr "\uD83D\uDC40 ")
+       ~expr))
+
+(defn safe-pop [stack]
+  (cond-> stack
+    (not-empty stack)
+    pop))
+
 ;; TOKENS
-;; Valid statements in the language
+;; The set of valid statements in the language
 
 (defrecord VariableToken [symbol])
 
@@ -17,7 +27,7 @@
 (defrecord IfElseToken [true-clause false-clause])
 
 ;; READERS
-;; Read data and return a valid token, or throw if invalid
+;; Read data and return a valid Token, or throw if invalid
 
 (defprotocol IRead
   (read [token]))
@@ -55,11 +65,6 @@
     (ifn? (second list))
     (nat-int? (last list))))
 
-(extend-protocol IRead
-  Object
-  (read [constant]
-    (ConstantToken. constant)))
-
 (defn parse-if-else-list [list]
   (let [[[head & true-clause] _ false-clause] (->> list
                                                    (partition-by (partial = (quote else>))))]
@@ -77,13 +82,27 @@
         (invocation? list) (InvokeToken. (second list) (last list))
         :else (throw (ex-info "Tried to parse invalid list" {:list list}))))))
 
+(extend-protocol IRead
+  Object
+  (read [constant]
+    (ConstantToken. constant)))
+
+;; EVALUATION
+;; receive a Token and an interpreter state and update the state according to the Token
+
 (defprotocol IEval
   (eval [token state]))
 
-(defn safe-pop [stack]
-  (cond-> stack
-    (not-empty stack)
-    pop))
+(def empty-state {:bindings {}
+                  :stack []})
+
+(defn read-eval [clause state]
+  (->> clause
+       (map read)
+       (reduce
+         (fn [prev-state token]
+           (eval token prev-state))
+         state)))
 
 (extend-protocol IEval
   VariableToken
@@ -108,21 +127,8 @@
   (eval [{:keys [op airity]} {:keys [stack] :as state}]
     (-> state
         (update :stack #(->> % (drop-last airity) vec))
-        (update :stack conj (apply op (take-last airity stack))))))
+        (update :stack conj (apply (resolve op) (take-last airity stack)))))
 
-(defmacro spy [expr]
-  `(do (println ~expr "\uD83D\uDC40 ")
-       ~expr))
-
-(defn read-eval [clause state]
-  (->> clause
-       (map read)
-       (reduce
-         (fn [prev-state token]
-           (eval token prev-state))
-         state)))
-
-(extend-protocol IEval
   IfElseToken
   (eval [{:keys [true-clause false-clause]} {:keys [stack] :as state'}]
     (let [state (update state' :stack safe-pop)]
@@ -130,87 +136,43 @@
         (read-eval true-clause state)
         (read-eval false-clause state)))))
 
+;; INTERFACE
 
-(def empty-state {:bindings {}
-                  :stack []})
+(defmacro defstackfn [name vars & clauses]
+  `(defn ~name [& args#]
+     (let [var-list# (quote ~vars)]
+       (assert (= (count var-list#) (count args#)) (str "Wrong number of args, expecting " (count var-list#)))
+       (-> (read-eval '(~@clauses) (assoc empty-state :bindings (zipmap var-list# args#)))
+           :stack
+           last))))
 
 (comment
 
+  (defstackfn x
+    [!a !b !c]
+    !a
+    !b
+    (invoke> + 2)
+    !v1+
+    !c
+    !c
+    <pop>
+    2
+    (invoke> * 2)
+    !v2+
+    (invoke> = 2)
+    (if>
+      !v1
+      !v2
+      (invoke> - 2)
+      else>
+      "false!!!"
+      (invoke> println 1)
+      <pop>
+      !v1
+      !v2
+      (invoke> * 2)))
 
-  (read-eval ['!a
-              '!b
-              (list 'invoke> + 2)
-              '!v1+
-              '!c
-              '!c
-              '<pop>
-              2
-              (list 'invoke> * 2)
-              '!v2+
-              (list 'invoke> = 2)
-              (list 'if>
-                    '!v1
-                    '!v2
-                    (list 'invoke> - 2)
-                    'else>
-                    "false!!!"
-                    (list 'invoke> println 1)
-                    '<pop>
-                    '!v1
-                    '!v2
-                    (list 'invoke> * 2))]
-             (update empty-state :bindings assoc '!a 1 '!b 2 '!c 4))
-
-  (eval (InvokeToken. 2) {:bindings {69 10} :stack [1 2]})
-
-  (map ["read"])
-
-  (read-eval ['!a
-              '!b
-              '(invoke> + 2)
-              ;'!0+
-              ;'!c
-              ;'<pop>
-              ;2
-              ;'(invoke> * 2)
-              ;'!v2+
-              ;'(invoke> = 2)
-              ]
-             (update empty-state :bindings assoc '!a 1 '!b 2 '!c 4))
-
-  (map read
-       ['!a
-        '!b
-        '(invoke> + 2)
-        '!0+
-        '!c
-        '<pop>
-        2
-        '(invoke> * 2)
-        '!v2+
-        '(invoke> = 2)])
-
-  (invocation? (list 'invoke> + 3))
-
-  (read (list 'invoe> #(+ 2 3) 3))
-
-  (= 'invoke> (first (list 'invoke> + 2)))
-
-  (= 'invoke> 'invoke>)
-  (read ['hi 'dane ()])
-
-  (variable? '!a)
-
-  (-> '!+ symbol name count)
-
-  (clojure.string/starts-with? (name '!a) "!")
-
-  (clojure.string/ends-with? (name '!a+) "+")
-
+  (x 1 2 4) ;; => prints false!!!, returns 24
 
   )
-
-(defn foo
-  "I don't do a whole lot."
-  [x]
-  (println x "Hello, World!"))
